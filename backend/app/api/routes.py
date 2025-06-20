@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
 from ..core.pose_analyzer import PoseAnalyzer
 from ..core.angle_analyzer import analyze_angle_data
+from ..core.llm_analyzer import analyze_form_with_llm
 import tempfile
 import os
 import json
@@ -121,4 +122,15 @@ async def get_exercise_data():
         print("[Backend] No exercise data available. Returning 404.")
         raise HTTPException(status_code=404, detail="No exercise data available. Please process a video first.")
     print("[Backend] Returning last processed exercise data.")
-    return JSONResponse(content=last_processed_data["exercise_data"]) 
+    return JSONResponse(content=last_processed_data["exercise_data"])
+
+@router.post("/generate-llm-feedback")
+async def generate_llm_feedback():
+    if not last_processed_data["exercise_data"]:
+        raise HTTPException(status_code=404, detail="No exercise data available. Please process a video first.")
+    exercise_data = last_processed_data["exercise_data"]
+    try:
+        llm_feedback = await analyze_form_with_llm(exercise_data)
+        return {"llm_feedback": llm_feedback}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generating LLM feedback: {e}") 

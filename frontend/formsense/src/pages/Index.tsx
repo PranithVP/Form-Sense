@@ -12,6 +12,8 @@ const Index = () => {
   const [processedVideoUrl, setProcessedVideoUrl] = useState<string | null>(null);
   const [analysisResult, setAnalysisResult] = useState<any>(null);
   const [exerciseTips, setExerciseTips] = useState<string | null>(null);
+  const [llmFeedback, setLlmFeedback] = useState<string | null>(null);
+  const [isGeneratingFeedback, setIsGeneratingFeedback] = useState(false);
 
   const getExerciseTips = (exercise: string): string => {
     const tips: { [key: string]: string } = {
@@ -47,6 +49,7 @@ const Index = () => {
     setIsAnalyzing(true);
     setAnalysisResult(null);
     setExerciseTips(null);
+    setLlmFeedback(null);
 
     const formData = new FormData();
     formData.append("file", selectedVideo);
@@ -70,7 +73,6 @@ const Index = () => {
       const { video_data, exercise_data } = responseData;
 
       if (video_data) {
-        // Decode base64 video data and create a Blob
         const videoBlob = await fetch(`data:video/mp4;base64,${video_data}`).then(res => res.blob());
         const videoUrl = URL.createObjectURL(videoBlob);
         setProcessedVideoUrl(videoUrl);
@@ -90,10 +92,31 @@ const Index = () => {
           angle_analysis: exercise_data.angle_analysis
         });
         setExerciseTips(getExerciseTips(exercise_data.classified_exercise));
+
+        // Generate LLM feedback
+        setIsGeneratingFeedback(true);
+        try {
+          const feedbackResponse = await fetch("http://localhost:8000/api/v1/generate-llm-feedback", {
+            method: "POST",
+          });
+          
+          if (!feedbackResponse.ok) {
+            throw new Error("Failed to generate LLM feedback");
+          }
+          
+          const feedbackData = await feedbackResponse.json();
+          setLlmFeedback(feedbackData.llm_feedback);
+        } catch (error) {
+          console.error("[Frontend] Error generating LLM feedback:", error);
+          setLlmFeedback("Unable to generate detailed form feedback at this time.");
+        } finally {
+          setIsGeneratingFeedback(false);
+        }
       } else {
         console.warn("[Frontend] No exercise_data received in the response.");
         setAnalysisResult(null);
         setExerciseTips(null);
+        setLlmFeedback(null);
       }
 
     } catch (err) {
@@ -102,6 +125,7 @@ const Index = () => {
       setProcessedVideoUrl(null);
       setAnalysisResult(null);
       setExerciseTips(null);
+      setLlmFeedback(null);
     } finally {
       setIsAnalyzing(false);
     }
@@ -227,71 +251,70 @@ const Index = () => {
                     </div>
                   </div>
 
-                  {/* Detailed Analysis */}
-                  {analysisResult.angle_analysis && (
-                    <div className="space-y-6">
-                      <h3 className="text-2xl font-semibold">Detailed Analysis</h3>
-                      <div className="p-6 rounded-xl bg-fitness-surface/30 border border-fitness-accent/10">
-                        <pre className="whitespace-pre-wrap text-sm">{analysisResult.angle_analysis.summary}</pre>
+                  {/* LLM Feedback */}
+                  <div className="space-y-6">
+                    {isGeneratingFeedback ? (
+                      <div className="flex items-center space-x-2">
+                        <Loader2 className="h-5 w-5 animate-spin" />
+                        <span>Generating detailed feedback...</span>
                       </div>
-                    </div>
-                  )}
+                    ) : llmFeedback ? (
+                      <div className="space-y-4">
+                        {llmFeedback.split('\n').map((line, index) => {
+                          if (!line.trim()) return null;
+                          
+                          let trimmedLine = line.trim();
+                          let isHeader = false;
+                          let displayText = trimmedLine;
 
-                  {/* Exercise Tips */}
-                  {exerciseTips && (
-                    <div className="space-y-6">
-                      <h3 className="text-2xl font-semibold">Exercise Tips</h3>
-                      <p className="text-lg">{exerciseTips}</p>
-                    </div>
-                  )}
+                          const markdownHeaderMatch = trimmedLine.match(/^(#+)\s*(.*)$/);
+                          if (markdownHeaderMatch) {
+                            displayText = markdownHeaderMatch[2].trim();
+                          }
+                          
+                          const numberedPrefixMatch = displayText.match(/^(\d+\.\s*)(.*)$/);
+                          if (numberedPrefixMatch) {
+                            displayText = numberedPrefixMatch[2].trim();
+                          }
+
+                          if (
+                            /^[A-Z\s]+$/.test(displayText) ||
+                            displayText.endsWith(':') ||
+                            /^(Overall Assessment|Specific Areas|Suggestions for Correction|Safety Concerns|Tips for Better Performance|Overall|Form|Technique|Recommendation|Improvement|Strength|Weakness|Key|Note|Important|Summary)/i.test(displayText)
+                          ) {
+                            isHeader = true;
+                          }
+
+                          if (/^[•\-\*]\s+/.test(trimmedLine)) {
+                            isHeader = false;
+                            const bulletPoint = trimmedLine.replace(/^[•\-\*]\s+/, '');
+                            return <p key={index} className="ml-8 text-lg text-black leading-relaxed mb-1">{bulletPoint}</p>;
+                          }
+
+                          if (isHeader) {
+                            return <h4 key={index} className="text-2xl font-semibold text-black mt-4 mb-2">{displayText}</h4>;
+                          }
+
+                          return <p key={index} className="text-lg leading-relaxed text-black">{trimmedLine}</p>;
+                        })}
+                      </div>
+                    ) : (
+                      <p className="text-muted-foreground">No feedback available</p>
+                    )}
+                  </div>
 
                   {/* Pose Visualization */}
                   <div className="space-y-6">
-                    <h3 className="text-2xl font-semibold">Pose Visualization</h3>
-                    <PoseVisualization
-                      videoFile={selectedVideo}
-                      isAnalyzing={isAnalyzing}
-                      processedVideoUrl={processedVideoUrl || undefined}
-                    />
-                  </div>
-
-                  {/* Joint Analysis */}
-                  <div className="space-y-6">
-                    <h3 className="text-2xl font-semibold">Joint Analysis</h3>
-                    <div className="p-6 rounded-xl bg-fitness-surface/30 border border-fitness-accent/10 max-w-2xl mx-auto">
-                      <div className="space-y-4">
-                        {Object.entries(analysisResult.angle_analysis.joint_stats).map(([joint, stats]: [string, any]) => (
-                          <div key={joint} className="flex items-start space-x-4">
-                            <div className="flex-1">
-                              <p className="text-lg font-medium mb-2">{joint}</p>
-                              <div className="flex items-center justify-between">
-                                <div className="grid grid-cols-3 gap-4 text-sm flex-1">
-                                  <div className="bg-fitness-surface/50 p-2 rounded-lg">
-                                    <p className="text-muted-foreground">Min Angle</p>
-                                    <p className="font-medium">{stats.min_angle.toFixed(1)}°</p>
-                                  </div>
-                                  <div className="bg-fitness-surface/50 p-2 rounded-lg">
-                                    <p className="text-muted-foreground">Max Angle</p>
-                                    <p className="font-medium">{stats.max_angle.toFixed(1)}°</p>
-                                  </div>
-                                  <div className="bg-fitness-surface/50 p-2 rounded-lg">
-                                    <p className="text-muted-foreground">Range</p>
-                                    <p className="font-medium">{stats.range_of_motion.toFixed(1)}°</p>
-                                  </div>
-                                </div>
-                                <span className={`text-sm px-2.5 py-1 rounded-full ml-4 self-center ${
-                                  stats.range_of_motion > 0 
-                                    ? 'bg-fitness-success/10 text-fitness-success' 
-                                    : 'bg-fitness-warning/10 text-fitness-warning'
-                                }`}>
-                                  {stats.range_of_motion > 0 ? 'Good Range' : 'Limited Range'}
-                                </span>
-                              </div>
-                            </div>
-                          </div>
-                        ))}
+                    <h3 className="text-2xl font-semibold text-black">Pose Visualization</h3>
+                    {processedVideoUrl && (
+                      <div className="aspect-video rounded-xl overflow-hidden border border-fitness-accent/10">
+                        <video
+                          src={processedVideoUrl}
+                          controls
+                          className="w-full h-full object-cover"
+                        />
                       </div>
-                    </div>
+                    )}
                   </div>
                 </div>
               </CardContent>
