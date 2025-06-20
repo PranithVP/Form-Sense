@@ -7,9 +7,32 @@ import os
 from collections import Counter
 import torch
 import torch.nn as nn
-from torchvision import models, transforms
+from torchvision import transforms
 from PIL import Image
 import time
+import timm
+
+class LandmarkSmoother:
+    def __init__(self, window_size=5):
+        self.window_size = window_size
+        self.history = []
+
+    def smooth(self, landmarks):
+        # landmarks: list of landmark objects (with x, y, z, visibility)
+        arr = np.array([[lm.x, lm.y, lm.z, lm.visibility] for lm in landmarks])
+        self.history.append(arr)
+        if len(self.history) > self.window_size:
+            self.history.pop(0)
+        smoothed = np.mean(self.history, axis=0)
+        # Return as list of objects with x, y, z, visibility attributes
+        class LM:
+            pass
+        smoothed_landmarks = []
+        for i in range(smoothed.shape[0]):
+            lm = LM()
+            lm.x, lm.y, lm.z, lm.visibility = smoothed[i]
+            smoothed_landmarks.append(lm)
+        return smoothed_landmarks
 
 class PoseAnalyzer:
     def __init__(self):
@@ -98,21 +121,29 @@ class PoseAnalyzer:
         
         # Load the model
         self.model = self.get_model()
+        self.model_loaded = False  # Flag to check if the model is loaded
         model_path = Path(__file__).parent.parent / "models" / "best_model.pth"
         if os.path.exists(model_path):
-            self.model.load_state_dict(torch.load(model_path, map_location=self.device))
-            self.model.eval()
+            try:
+                self.model.load_state_dict(torch.load(model_path, map_location=self.device))
+                self.model.eval()
+                self.model_loaded = True
+            except Exception as e:
+                print(f"Warning: Error loading model file at {model_path}: {e}")
         else:
-            print(f"Warning: Model file not found at {model_path}. Using untrained model.")
+            print(f"Warning: Model file not found at {model_path}. Exercise classification will be disabled.")
         
-        # Initialize MediaPipe Pose with minimal configuration
+        # Initialize MediaPipe Pose with improved configuration for video
         self.mp_pose = mp.solutions.pose
         self.mp_drawing = mp.solutions.drawing_utils
         self.mp_drawing_styles = mp.solutions.drawing_styles
         self.pose = self.mp_pose.Pose(
-            static_image_mode=True,  # Changed to True
-            model_complexity=0,      # Use simplest model
-            min_detection_confidence=0.5
+            static_image_mode=False,  # Important for video!
+            model_complexity=1,
+            smooth_landmarks=True,    # Enable smoothing
+            enable_segmentation=False,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.7
         )
         
         # Define angles to calculate
@@ -144,9 +175,8 @@ class PoseAnalyzer:
         }
 
     def get_model(self):
-        model = models.resnet50(pretrained=True)
-        num_ftrs = model.fc.in_features
-        model.fc = nn.Linear(num_ftrs, len(self.exercise_classes))
+        # Use EfficientNet (must match the architecture used in training)
+        model = timm.create_model('efficientnet_b3a', pretrained=False, num_classes=len(self.exercise_classes))
         return model.to(self.device)
 
     def preprocess_frame(self, frame):
@@ -199,29 +229,54 @@ class PoseAnalyzer:
 
     def classify_exercise(self, frame, landmarks):
         """Classify the exercise using the neural network model."""
-        # Preprocess frame for neural network
-        processed_tensor = self.preprocess_frame(frame).unsqueeze(0).to(self.device)
-        
-        # Get model prediction
-        with torch.no_grad():
-            output = self.model(processed_tensor)
-            probs = torch.softmax(output, dim=1)
-            predicted_class = torch.argmax(probs, dim=1).item()
-        
-        # Get exercise name with proper capitalization
-        exercise = self.exercise_classes[predicted_class]
-        
-        # Get joint angles
-        angles = self.get_joint_angles(landmarks, frame.shape)
-        
-        return exercise, {}, angles
+        # If model is not loaded, return "Unknown"
+        if not self.model_loaded:
+            return "Unknown", {}, self.get_joint_angles(landmarks, frame.shape)
+
+        try:
+            # Preprocess frame for neural network
+            processed_tensor = self.preprocess_frame(frame).unsqueeze(0).to(self.device)
+            # Get model prediction
+            with torch.no_grad():
+                output = self.model(processed_tensor)
+            # Get exercise name with proper capitalization
+            exercise = self.exercise_classes[torch.argmax(output, dim=1).item()] if torch.argmax(output, dim=1).item() < len(self.exercise_classes) else "Unknown"
+            # Get joint angles
+            angles = self.get_joint_angles(landmarks, frame.shape)
+            return exercise, {}, angles
+        except Exception as e:
+            print(f"Exception in classify_exercise: {e}")
+            return "Unknown", {}, self.get_joint_angles(landmarks, frame.shape)
 
     def generate_feedback(self, avg_angles, exercise_name, tolerance=10):
-        """Generate detailed feedback based on average angles and ideal angles."""
+        """Generate detailed feedback based on average angles and ideal angles, but avoid mentioning left/right discrepancies due to camera angle."""
         feedback_messages = []
         ideal_angles = self.ideal_angles.get(exercise_name, {})
-        
+        # Group left/right pairs
+        paired_joints = [('Left Elbow', 'Right Elbow'), ('Left Shoulder', 'Right Shoulder'),
+                         ('Left Hip', 'Right Hip'), ('Left Knee', 'Right Knee')]
+        used = set()
+        for left, right in paired_joints:
+            if left in ideal_angles and right in ideal_angles and left in avg_angles and right in avg_angles:
+                avg_val = (avg_angles[left] + avg_angles[right]) / 2
+                avg_ideal = (ideal_angles[left] + ideal_angles[right]) / 2
+                diff = avg_val - avg_ideal
+                if abs(diff) > tolerance:
+                    suggestion = (f"Average {left.split()[1]}: Your average is {avg_val:.1f}° "
+                                  f"(ideal {avg_ideal}°); diff = {abs(diff):.1f}°. ")
+                    if diff > 0:
+                        suggestion += "Consider reducing this angle."
+                    else:
+                        suggestion += "Consider increasing this angle."
+                    feedback_messages.append(suggestion)
+                else:
+                    feedback_messages.append(f"Average {left.split()[1]}: Good! ({avg_val:.1f}° is close to ideal {avg_ideal}°)")
+                used.add(left)
+                used.add(right)
+        # Handle unpaired or other angles
         for angle_name in ideal_angles:
+            if angle_name in used:
+                continue
             if angle_name in avg_angles:
                 diff = avg_angles[angle_name] - ideal_angles[angle_name]
                 if abs(diff) > tolerance:
@@ -236,7 +291,6 @@ class PoseAnalyzer:
                     feedback_messages.append(f"{angle_name}: Good! ({avg_angles[angle_name]:.1f}° is close to ideal {ideal_angles[angle_name]}°)")
             else:
                 feedback_messages.append(f"{angle_name}: Data not available.")
-        
         return feedback_messages
 
     def process_video(self, video_path):
@@ -272,6 +326,8 @@ class PoseAnalyzer:
             exercise_predictions = []
             all_angles_per_joint = {angle_name: [] for angle_name in self.ANGLES_TO_CALCULATE.keys()}
             
+            smoother = LandmarkSmoother(window_size=5)
+            
             while cap.isOpened():
                 ret, frame = cap.read()
                 if not ret:
@@ -282,8 +338,10 @@ class PoseAnalyzer:
                 results = self.pose.process(rgb_frame)
                 
                 if results.pose_landmarks:
-                    # Get angles for this frame
-                    angles = self.get_joint_angles(results.pose_landmarks.landmark, frame.shape)
+                    # Smooth landmarks
+                    smoothed_landmarks = smoother.smooth(results.pose_landmarks.landmark)
+                    # Get angles for this frame using smoothed landmarks
+                    angles = self.get_joint_angles(smoothed_landmarks, frame.shape)
                     
                     # Store angles
                     angle_data.append(angles)
@@ -291,13 +349,13 @@ class PoseAnalyzer:
                         all_angles_per_joint[joint].append(angle)
                     
                     # Classify exercise
-                    exercise, _, _ = self.classify_exercise(frame, results.pose_landmarks.landmark)
+                    exercise, _, _ = self.classify_exercise(frame, smoothed_landmarks)
                     exercise_predictions.append(exercise)
                     
-                    # Draw landmarks and angles
+                    # Draw smoothed landmarks and angles
                     self.mp_drawing.draw_landmarks(
                         frame,
-                        results.pose_landmarks,
+                        results.pose_landmarks,  # For drawing, you can use original or smoothed
                         self.mp_pose.POSE_CONNECTIONS,
                         landmark_drawing_spec=self.mp_drawing_styles.get_default_pose_landmarks_style()
                     )
@@ -317,12 +375,15 @@ class PoseAnalyzer:
             avg_angles = {joint: np.mean(angles) if angles else 0 for joint, angles in all_angles_per_joint.items()}
 
             # Get the most common exercise prediction
-            final_exercise = Counter(exercise_predictions).most_common(1)[0][0] if exercise_predictions else "Unknown"
+            if exercise_predictions:
+                counter = Counter(exercise_predictions)
+                final_exercise = counter.most_common(1)[0][0]
+            else:
+                final_exercise = "Unknown"
             
             # Generate detailed feedback based on angles
             feedback = self.generate_feedback(avg_angles, final_exercise)
             
-            print(f"[PoseAnalyzer] Returning values: output_path={output_path}, angle_data_len={len(angle_data)}, avg_angles_len={len(avg_angles)}, final_exercise={final_exercise}, feedback={feedback}")
             return output_path, angle_data, avg_angles, final_exercise, feedback
         except Exception as e:
             print(f"[PoseAnalyzer] Error during video processing in PoseAnalyzer: {e}")

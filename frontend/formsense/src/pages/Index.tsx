@@ -138,8 +138,8 @@ const Index = () => {
         <div className="container mx-auto px-4 py-8">
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-4">
-              <div className="w-12 h-12 gradient-fitness rounded-xl flex items-center justify-center shadow-lg">
-                <Activity className="h-7 w-7 text-white" />
+              <div className="w-16 h-16 rounded-xl flex items-center justify-center overflow-hidden">
+                <img src="/favicon.ico" alt="FormSense Favicon" className="w-14 h-14 object-contain" />
               </div>
               <div>
                 <h1 className="text-3xl font-bold text-black">FormSense</h1>
@@ -149,15 +149,15 @@ const Index = () => {
             <div className="hidden md:flex items-center space-x-6">
               <div className="flex items-center space-x-2 text-muted-foreground">
                 <Target className="h-5 w-5" />
-                <span className="text-sm">Real-time Analysis</span>
+                <span className="text-sm">Video-based Analysis</span>
               </div>
               <div className="flex items-center space-x-2 text-muted-foreground">
                 <Activity className="h-5 w-5" />
-                <span className="text-sm">Form Feedback</span>
+                <span className="text-sm">AI Form Feedback</span>
               </div>
               <div className="flex items-center space-x-2 text-muted-foreground">
                 <BarChart3 className="h-5 w-5" />
-                <span className="text-sm">Progress Tracking</span>
+                <span className="text-sm">Angle & Exercise Insights</span>
               </div>
             </div>
           </div>
@@ -267,6 +267,17 @@ const Index = () => {
                           let isHeader = false;
                           let displayText = trimmedLine;
 
+                          // Bold any **text**
+                          const renderWithBold = (text: string) => {
+                            const parts = text.split(/(\*\*[^*]+\*\*)/g);
+                            return parts.map((part, i) => {
+                              if (/^\*\*[^*]+\*\*$/.test(part)) {
+                                return <strong key={i}>{part.slice(2, -2)}</strong>;
+                              }
+                              return part;
+                            });
+                          };
+
                           const markdownHeaderMatch = trimmedLine.match(/^(#+)\s*(.*)$/);
                           if (markdownHeaderMatch) {
                             displayText = markdownHeaderMatch[2].trim();
@@ -288,14 +299,14 @@ const Index = () => {
                           if (/^[•\-\*]\s+/.test(trimmedLine)) {
                             isHeader = false;
                             const bulletPoint = trimmedLine.replace(/^[•\-\*]\s+/, '');
-                            return <p key={index} className="ml-8 text-lg text-black leading-relaxed mb-1">{bulletPoint}</p>;
+                            return <p key={index} className="ml-8 text-lg text-black leading-relaxed mb-1">{renderWithBold(bulletPoint)}</p>;
                           }
 
                           if (isHeader) {
-                            return <h4 key={index} className="text-2xl font-semibold text-black mt-4 mb-2">{displayText}</h4>;
+                            return <h4 key={index} className="text-2xl font-semibold text-black mt-4 mb-2">{renderWithBold(displayText)}</h4>;
                           }
 
-                          return <p key={index} className="text-lg leading-relaxed text-black">{trimmedLine}</p>;
+                          return <p key={index} className="text-lg leading-relaxed text-black">{renderWithBold(trimmedLine)}</p>;
                         })}
                       </div>
                     ) : (
@@ -311,7 +322,7 @@ const Index = () => {
                         <video
                           src={processedVideoUrl}
                           controls
-                          className="w-full h-full object-cover"
+                          className="w-full h-full object-contain bg-black"
                         />
                       </div>
                     )}

@@ -11,6 +11,12 @@ import os
 import time
 import copy
 from tqdm import tqdm
+import timm
+from torch.optim.lr_scheduler import CosineAnnealingLR
+from sklearn.metrics import classification_report, confusion_matrix
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
 
 # Set device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -25,10 +31,11 @@ test_dir = data_dir / "test"
 def get_transforms():
     return {
         "train": transforms.Compose([
-            transforms.Resize((224, 224)),
+            transforms.RandomResizedCrop(224),
             transforms.RandomHorizontalFlip(),
-            transforms.RandomRotation(15),
-            transforms.ColorJitter(brightness=0.2, contrast=0.2),
+            transforms.RandomRotation(20),
+            transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),
+            transforms.RandomErasing(p=0.2),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ]),
@@ -83,16 +90,16 @@ def get_dataloaders(datasets_dict):
         "test": DataLoader(datasets_dict["test"], batch_size=16, shuffle=False, num_workers=4)
     }
 
-def train_model(model, dataloaders, criterion, optimizer, num_epochs=25):
+def train_model(model, dataloaders, criterion, optimizer, scheduler, num_epochs=25, patience=5):
     since = time.time()
     best_model_wts = copy.deepcopy(model.state_dict())
     best_acc = 0.0
+    epochs_no_improve = 0
 
     for epoch in range(num_epochs):
         print(f'\nEpoch {epoch}/{num_epochs - 1}')
         print('-' * 10)
 
-        # Each epoch has a training and validation phase
         for phase in ['train', 'val']:
             if phase == 'train':
                 model.train()
@@ -101,34 +108,23 @@ def train_model(model, dataloaders, criterion, optimizer, num_epochs=25):
 
             running_loss = 0.0
             running_corrects = 0
-
-            # Create progress bar for each phase
             pbar = tqdm(dataloaders[phase], desc=f'{phase.capitalize()} Phase')
-            
-            # Iterate over data
+
             for inputs, labels in pbar:
                 inputs = inputs.to(device)
                 labels = labels.to(device)
-
-                # Zero the parameter gradients
                 optimizer.zero_grad()
 
-                # Forward pass
                 with torch.set_grad_enabled(phase == 'train'):
                     outputs = model(inputs)
                     _, preds = torch.max(outputs, 1)
                     loss = criterion(outputs, labels)
-
-                    # Backward + optimize only if in training phase
                     if phase == 'train':
                         loss.backward()
                         optimizer.step()
 
-                # Statistics
                 running_loss += loss.item() * inputs.size(0)
                 running_corrects += torch.sum(preds == labels.data)
-                
-                # Update progress bar
                 pbar.set_postfix({
                     'loss': f'{loss.item():.4f}',
                     'acc': f'{torch.sum(preds == labels.data).item() / inputs.size(0):.4f}'
@@ -136,56 +132,94 @@ def train_model(model, dataloaders, criterion, optimizer, num_epochs=25):
 
             epoch_loss = running_loss / len(dataloaders[phase].dataset)
             epoch_acc = running_corrects.double() / len(dataloaders[phase].dataset)
-
             print(f'{phase.capitalize()} Loss: {epoch_loss:.4f} Acc: {epoch_acc:.4f}')
 
-            # Deep copy the model
-            if phase == 'val' and epoch_acc > best_acc:
-                best_acc = epoch_acc
-                best_model_wts = copy.deepcopy(model.state_dict())
-                # Save the best model
-                torch.save(best_model_wts, 'models/best_model.pth')
-                print(f'New best model saved! Validation accuracy: {best_acc:.4f}')
+            if phase == 'val':
+                scheduler.step(epoch_loss)
+                if epoch_acc > best_acc:
+                    best_acc = epoch_acc
+                    best_model_wts = copy.deepcopy(model.state_dict())
+                    torch.save(best_model_wts, 'models/best_model.pth')
+                    print(f'New best model saved! Validation accuracy: {best_acc:.4f}')
+                    epochs_no_improve = 0
+                else:
+                    epochs_no_improve += 1
+
+        if epochs_no_improve >= patience:
+            print(f'Early stopping at epoch {epoch} due to no improvement in validation accuracy.')
+            break
 
     time_elapsed = time.time() - since
     print(f'\nTraining complete in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s')
     print(f'Best val Acc: {best_acc:4f}')
-
-    # Load best model weights
     model.load_state_dict(best_model_wts)
     return model
 
-def main():
-    # Create models directory if it doesn't exist
-    os.makedirs('models', exist_ok=True)
+def test_model(model, dataloader, class_names):
+    """Evaluates the model on the test set and prints a classification report."""
+    model.eval()
+    y_true = []
+    y_pred = []
 
-    # Prepare dataset
+    with torch.no_grad():
+        for inputs, labels in tqdm(dataloader, desc="Testing"):
+            inputs = inputs.to(device)
+            labels = labels.to(device)
+
+            outputs = model(inputs)
+            _, preds = torch.max(outputs, 1)
+
+            y_true.extend(labels.cpu().numpy())
+            y_pred.extend(preds.cpu().numpy())
+
+    print("\n--- Test Results ---")
+    print(classification_report(y_true, y_pred, target_names=class_names))
+
+    # Plot confusion matrix
+    cm = confusion_matrix(y_true, y_pred)
+    plt.figure(figsize=(15, 12))
+    sns.heatmap(pd.DataFrame(cm, index=class_names, columns=class_names), annot=True, fmt='d', cmap='Blues')
+    plt.title('Confusion Matrix')
+    plt.ylabel('Actual')
+    plt.xlabel('Predicted')
+    
+    # Save the plot
+    cm_path = 'models/confusion_matrix.png'
+    plt.savefig(cm_path)
+    print(f"Confusion matrix saved to {cm_path}")
+    plt.show()
+
+def main():
+    os.makedirs('models', exist_ok=True)
     print("Preparing dataset...")
     prepare_dataset()
-
-    # Load datasets
     print("Loading datasets...")
     datasets_dict = load_datasets()
     dataloaders = get_dataloaders(datasets_dict)
+    class_names = datasets_dict['train'].classes
+    print(f"Found {len(class_names)} classes: {', '.join(class_names)}")
 
-    # Initialize model
     print("Initializing model...")
-    model = models.resnet50(pretrained=True)
-    num_ftrs = model.fc.in_features
-    model.fc = nn.Linear(num_ftrs, len(datasets_dict['train'].classes))
+    num_classes = len(class_names)
+    # Use EfficientNet from timm
+    model = timm.create_model('efficientnet_b3a', pretrained=True, num_classes=num_classes)
+    # Unfreeze all layers for full fine-tuning
+    for param in model.parameters():
+        param.requires_grad = True
     model = model.to(device)
-
-    # Define loss function and optimizer
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-
-    # Train model
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.0005, weight_decay=1e-4)
+    # Use ReduceLROnPlateau scheduler
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2, verbose=True)
     print("Starting training...")
-    model = train_model(model, dataloaders, criterion, optimizer)
-
-    # Save final model
+    model = train_model(model, dataloaders, criterion, optimizer, scheduler, num_epochs=30, patience=5)
     torch.save(model.state_dict(), 'models/final_model.pth')
     print("Training complete! Models saved in 'models' directory.")
+
+    # Test the best model
+    print("\nLoading best model for testing...")
+    model.load_state_dict(torch.load('models/best_model.pth'))
+    test_model(model, dataloaders['test'], class_names)
 
 if __name__ == "__main__":
     main() 

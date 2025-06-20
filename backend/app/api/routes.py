@@ -91,8 +91,6 @@ async def process_video(background_tasks: BackgroundTasks, file: UploadFile = Fi
             "feedback": feedback,
             "angle_analysis": angle_analysis
         }
-        
-        print(f"[Backend] Generated exercise data: {json.dumps(exercise_data, indent=2)}")
 
         # Update the global store
         last_processed_data["video_path"] = output_path

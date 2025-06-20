@@ -31,7 +31,7 @@ async def analyze_form_with_llm(exercise_data: Dict[str, Any]) -> str:
 Exercise Data:
 {summary}
 
-Please provide detailed feedback about their form. Use headings and bullet points. Do NOT use markdown formatting (no ** for bold text, no # for headings). Do NOT number the main sections.
+Please provide detailed feedback about their form. Use headings and bullet points. Do NOT use markdown formatting (no ** for bold text, no # for headings). Do NOT number the main sections. Do NOT use numbered lists or numbered headings anywhere in your response. Only use bullet points or plain text.
 
 Overall Assessment of Form
 
