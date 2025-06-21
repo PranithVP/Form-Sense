@@ -9,6 +9,7 @@ import tempfile
 import os
 import json
 import base64
+import time
 from typing import Dict, Any
 
 class ExerciseDataStore:
@@ -37,22 +38,47 @@ UPLOADS_DIR.mkdir(exist_ok=True)
 # Store the last processed video's data
 last_processed_data = {"video_path": None, "exercise_data": None}
 
+def cleanup_old_processed_files(max_age_hours: int = 24):
+    """Clean up processed files older than max_age_hours from the uploads directory."""
+    current_time = time.time()
+    max_age_seconds = max_age_hours * 3600
+    
+    print(f"[Backend] Cleaning up processed files older than {max_age_hours} hours...")
+    
+    for file_path in UPLOADS_DIR.glob("processed_*"):
+        if file_path.is_file():
+            file_age = current_time - file_path.stat().st_mtime
+            if file_age > max_age_seconds:
+                try:
+                    os.unlink(file_path)
+                    print(f"[Backend] Deleted old processed file: {file_path}")
+                except Exception as e:
+                    print(f"[Backend] Error deleting old file {file_path}: {e}")
+
+# Clean up old files on startup
+cleanup_old_processed_files()
+
 def _cleanup_files(tmp_video_path: Path, output_path: Path | None):
     """Helper function to clean up temporary files in a background task."""
     print(f"[Backend] Attempting to clean up files: {tmp_video_path} and {output_path}")
-    if tmp_video_path.exists():
+    
+    # Clean up temporary input file
+    if tmp_video_path and tmp_video_path.exists():
         try:
             os.unlink(tmp_video_path)
             print(f"[Backend] Successfully deleted temporary input file: {tmp_video_path}")
         except Exception as e:
             print(f"[Backend] Error deleting temporary input file {tmp_video_path}: {e}")
     
+    # Clean up processed output file
     if output_path and output_path.exists():
         try:
+            # Add a small delay to ensure the file is no longer being read
+            time.sleep(1)
             os.unlink(output_path)
-            print(f"[Backend] Successfully deleted temporary output file: {output_path}")
+            print(f"[Backend] Successfully deleted processed output file: {output_path}")
         except Exception as e:
-            print(f"[Backend] Error deleting temporary output file {output_path}: {e}")
+            print(f"[Backend] Error deleting processed output file {output_path}: {e}")
 
 @router.post("/process")
 async def process_video(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
@@ -79,10 +105,24 @@ async def process_video(background_tasks: BackgroundTasks, file: UploadFile = Fi
         angle_analysis = analyze_angle_data(angle_data, classified_exercise)
         print(f"[Backend] Generated angle analysis: {angle_analysis['summary']}")
 
-        # Read the processed video file and encode it to base64
-        with open(output_path, "rb") as video_file:
-            encoded_video = base64.b64encode(video_file.read()).decode("utf-8")
-        print(f"[Backend] Encoded video to base64. Length: {len(encoded_video)} characters")
+        # Read the processed video file and encode it to base64, then delete the file immediately
+        video_data = None
+        if output_path and os.path.exists(output_path):
+            with open(output_path, "rb") as video_file:
+                video_data = video_file.read()
+            # Delete the processed file immediately after reading
+            try:
+                os.unlink(output_path)
+                print(f"[Backend] Successfully deleted processed video file: {output_path}")
+            except Exception as e:
+                print(f"[Backend] Error deleting processed video file {output_path}: {e}")
+        
+        if video_data:
+            encoded_video = base64.b64encode(video_data).decode("utf-8")
+            print(f"[Backend] Encoded video to base64. Length: {len(encoded_video)} characters")
+        else:
+            encoded_video = ""
+            print(f"[Backend] No video data to encode")
 
         exercise_data = {
             "angle_data": angle_data,
@@ -93,7 +133,7 @@ async def process_video(background_tasks: BackgroundTasks, file: UploadFile = Fi
         }
 
         # Update the global store
-        last_processed_data["video_path"] = output_path
+        last_processed_data["video_path"] = None  # No longer storing the path since file is deleted
         last_processed_data["exercise_data"] = exercise_data
         
         response_data = {
@@ -109,10 +149,13 @@ async def process_video(background_tasks: BackgroundTasks, file: UploadFile = Fi
         raise HTTPException(status_code=500, detail=f"Error processing video: {e}")
 
     finally:
-        # Add cleanup task to background tasks
-        # For debugging, we are temporarily NOT cleaning up output_path
-        background_tasks.add_task(_cleanup_files, tmp_video_path, None) # Only clean up input temp file for now
-        print(f"[Backend] Processed video saved temporarily for inspection at: {output_path}")
+        # Clean up the temporary input file
+        if tmp_video_path and tmp_video_path.exists():
+            try:
+                os.unlink(tmp_video_path)
+                print(f"[Backend] Successfully deleted temporary input file: {tmp_video_path}")
+            except Exception as e:
+                print(f"[Backend] Error deleting temporary input file {tmp_video_path}: {e}")
 
 @router.get("/exercise-data")
 async def get_exercise_data():
@@ -131,4 +174,13 @@ async def generate_llm_feedback():
         llm_feedback = await analyze_form_with_llm(exercise_data)
         return {"llm_feedback": llm_feedback}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error generating LLM feedback: {e}") 
+        raise HTTPException(status_code=500, detail=f"Error generating LLM feedback: {e}")
+
+@router.post("/cleanup-files")
+async def cleanup_files(max_age_hours: int = 24):
+    """Manually trigger cleanup of old processed files."""
+    try:
+        cleanup_old_processed_files(max_age_hours)
+        return {"message": f"Cleanup completed. Files older than {max_age_hours} hours have been removed."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error during cleanup: {e}") 

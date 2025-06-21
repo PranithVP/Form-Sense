@@ -1,8 +1,9 @@
 from fastapi import UploadFile, File, HTTPException
 from fastapi.security import OAuth2PasswordRequestForm
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, BackgroundTasks
 import tempfile
 import os
+import time
 from pathlib import Path
 from backend.utils.auth import get_current_user
 from backend.utils.pose_analyzer import PoseAnalyzer
@@ -15,8 +16,19 @@ pose_analyzer = PoseAnalyzer()
 UPLOADS_DIR = Path(__file__).parent.parent.parent / "uploads"
 UPLOADS_DIR.mkdir(exist_ok=True)
 
+def _cleanup_processed_file(file_path: Path):
+    """Helper function to clean up processed files after a delay."""
+    time.sleep(5)  # Wait 5 seconds to ensure file is no longer needed
+    if file_path.exists():
+        try:
+            os.unlink(file_path)
+            print(f"[Video Endpoint] Successfully deleted processed file: {file_path}")
+        except Exception as e:
+            print(f"[Video Endpoint] Error deleting processed file {file_path}: {e}")
+
 @router.post("/process")
 async def process_video(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user)
 ):
@@ -38,6 +50,9 @@ async def process_video(
         
         # Clean up the temporary file
         os.unlink(temp_path)
+        
+        # Add cleanup task for the processed file after a delay
+        background_tasks.add_task(_cleanup_processed_file, final_output_path)
         
         # Calculate average angles from angle_data
         avg_angles = {}
