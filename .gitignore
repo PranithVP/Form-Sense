@@ -21,12 +21,6 @@ ENV/
 .DS_Store
 Thumbs.db
 
-# Model files
-*.pth
-*.pt
-*.h5
-*.hdf5
-
 # Logs
 *.log
 logs/ 
