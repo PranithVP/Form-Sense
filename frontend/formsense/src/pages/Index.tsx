@@ -54,9 +54,12 @@ const Index = () => {
     const formData = new FormData();
     formData.append("file", selectedVideo);
 
+    // Use environment variable for API URL
+    const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+
     try {
       console.log("[Frontend] Sending video to backend...");
-      const response = await fetch("http://localhost:8000/api/v1/process", {
+      const response = await fetch(`${API_BASE_URL}/api/v1/process`, {
         method: "POST",
         body: formData,
       });
@@ -96,7 +99,7 @@ const Index = () => {
         // Generate LLM feedback
         setIsGeneratingFeedback(true);
         try {
-          const feedbackResponse = await fetch("http://localhost:8000/api/v1/generate-llm-feedback", {
+          const feedbackResponse = await fetch(`${API_BASE_URL}/api/v1/generate-llm-feedback`, {
             method: "POST",
           });
           
