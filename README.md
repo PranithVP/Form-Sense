@@ -58,7 +58,7 @@ npm install
 1. Start the backend server:
 ```bash
 cd backend
-uvicorn app.main:app --reload
+python run.py
 ```
 
 2. Start the frontend development server:
